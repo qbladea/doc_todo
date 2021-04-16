@@ -1,0 +1,340 @@
+* 使用 Guix System 
+** Guix System 简介
+
+   Guix System 是完全使用GNU Guix包管理器管理操作系统的一个操作系统
+   它当前支持的内核包括:
+   - linux内核
+   - hurd内核(实验阶段，还需要做更多)
+
+   它比起传统发行的优点:
+   整个系统可以使用编程语言定义，整个系统配置文件编写非常自由。
+   注重软件可重现，提供时光机功能。
+   提供一键生成虚拟机和磁盘镜像的功能用于测试系统或隔离进程。
+
+** Guix System (Linux)的安装
+*** 下载 Guix System 安装镜像
+
+      可以从任意一个gnu软件镜像中下载安装镜像:
+
+      #+BEGIN_SRC shell
+        links https://mirrors.tuna.tsinghua.edu.cn/gnu/guix
+      #+END_SRC
+
+      下载最新版本即可:
+
+      #+BEGIN_SRC text
+       links https://mirrors.tuna.tsinghua.edu.cn/gnu/guix/guix-system-install-X.Y.Z.ARCH-linux.iso.xz
+       links https://mirrors.tuna.tsinghua.edu.cn/gnu/guix/guix-system-install-X.Y.Z.ARCH-linux.iso.xz.sig
+      #+END_SRC
+
+      将X.Y.Z.ARCH 替换为你需要的
+
+*** 效验安装镜像
+
+      这通常是必须的，因为如果你使用了不安全的网络连接或者不可靠的镜像地址，将会得到损坏甚至包括中间人攻击的安装镜像。
+
+      为了避免它，请在当前系统安装gnupg来导入官方开发者的密钥并效验它:
+
+      #+BEGIN_SRC shell
+        wget https://sv.gnu.org/people/viewgpg.php?user_id=15145 \
+            -qO - | gpg --import -
+        gpg --verify guix-system-install-X.Y.Z.ARCH-linux.iso.xz.sig
+      #+END_SRC
+
+      如果出现以下内容说明镜像内容完整:
+
+      #+BEGIN_SRC text
+       gpg: Good signature from "Ludovic Courtès <ludo@gnu.org>" [unknown]
+       gpg:                 aka "Ludovic Courtès <ludo@chbouib.org>" [unknown]
+       gpg:                 aka "Ludovic Courtès (Inria) <ludovic.courtes@inria.fr>" [unknown]	
+      #+END_SRC
+
+*** 将安装镜像写入U盘或者其他可启动介质
+
+      解压镜像并使用dd工具写入:
+      #+BEGIN_SRC shell
+	     xz -d guix-system-install-X.Y.Z.ARCH-linux.iso.xz
+	     dd if=guix-system-install-X.Y.Z.ARCH-linux.iso of=/dev/sdX status=progress
+	     sync # 通常需要这个命令来保证镜像文件已经完全写入磁盘
+      #+END_SRC
+
+*** 虚拟机的演示
+
+      这里不是安装过程中需要的，只是演示的需要
+      
+      这里使用QEMU创建一个系统机来演示:
+
+      #+BEGIN_SRC shell
+	qemu-img create -f qcow2 50G.qcow2 50G # 创建一个虚拟磁盘用于GuixSystem
+	qemu-system-x86_64 -hda 50G.qcow2 \
+		   -cdrom guix-system-install-1.2.0.x86_64-linux.iso \
+		   -net nic -net user,hostfwd=tcp:127.0.0.1:12223-:22 \
+		   -m 2G \
+		   -cpu host \
+		   -smp 2\
+		   -enable-kvm
+      #+END_SRC
+
+    之后的演示为了复制方便会设置sshd用于远程连接
+
+    先使用Ctrl+Alt+F3 切换到可登录的vt并使用root和空密码登录
+
+    #+BEGIN_SRC shell
+      ssh-keygen -A # 生成hostkey
+      passwd # 设定root账户的密码
+      herd start ssh-daemon # 启动sshd
+    #+END_SRC
+
+    #+BEGIN_SRC shell
+      ssh -p 12223 root@127.0.0.1
+    #+END_SRC
+
+*** 配置网络
+
+      网络在Guix安装中是必须的.
+
+      如果是DHCP网络，live系统通常会自动配置
+      如果是静态地址网络请使用 ~iproute2~ 套件进行配置
+
+*** 配置磁盘
+
+      使用cfdisk进行磁盘分区
+
+      1. MBR
+	 保证有一个bootable的分区用于启动GRUB
+	 保证有一个root分区用于GuixSystem
+      2. GPT
+	 保证有一个EFI分区用于存放EFI启动文件
+	 保证有一个root分区用于GuixSystem
+
+      如果条件允许建议使用btrfs文件系统,它不会爆inode,而且拥有透明压缩等特性,对GuixSystem很友好.
+
+      #+BEGIN_SRC shell
+         mkfs.btrfs /dev/sdXx # 格式化为btrfs文件系统
+      #+END_SRC
+
+      挂载分区到 ~/mnt~
+      #+BEGIN_SRC shell
+	mount -o compress-force=zstd /dev/sdXx /mnt # btrfs的挂载带有透明压缩，如果是其他文件系统请自行决定
+      #+END_SRC
+
+      #+BEGIN_SRC shell
+	 # 如果是BIOS启动并使用了独立的启动分区
+	 mkdir /mnt/boot
+	 mount /dev/sdXx /mnt/boot
+      #+END_SRC
+
+      #+BEGIN_SRC
+	# 如果是EFI启动
+	mkdir -pv /mnt/boot/efi
+	mount /dev/sdXx /mnt/boot/efi
+      #+END_SRC
+
+*** 更新Guix
+
+      在更新Guix以及进行以下操作之前需要设定启动 ~cow-store~ 服务.
+
+      #+BEGIN_SRC shell
+        herd start cow-store /mnt # 它的作用是将之后的下载和安装都使用/mnt来存储，而不是存储在内存里面
+      #+END_SRC
+
+      设定使用国内的反向代理:
+      #+BEGIN_SRC shell
+        export GUIX_BUILD_OPTIONS="--substitute-urls=https://mirrors.sjtug.sjtu.edu.cn/guix"
+      #+END_SRC
+
+      Guix使用git仓库进行更新,
+      拷贝Guix的源码:
+
+      #+BEGIN_SRC shell
+	  mkdir -pv /mnt/srv/git/guix/
+	  cd /mnt/srv/guix/
+	  guix environment --ad-hoc git # 启动一个带有git的环境
+	  git remote add sjtug https://git.sjtu.edu.cn/sjtug/guix.git # 添加国内的git镜像用于首次下载加速
+	  git remote add gnu https://git.savannah.gnu.org/git/guix.git # 添加官方的镜像用于以后的增量更新下载和密钥分支下载
+	  git pull sjtug master # 下载master分支
+	  git pull gnu master # 保证master分支最新
+	  git fetch gnu keyring:keyring # 下载密钥分支用于安全验证
+      #+END_SRC
+
+      使用下载下来的源码进行更新:
+
+      #+BEGIN_SRC shell
+	guix pull --url=/mnt/srv/git/guix --branch=master # 更新
+        hash guix # 保证shell中使用更新后的guix
+      #+END_SRC
+
+*** 编写一个最小化配置文件
+
+      在源码中会提供几个配置文件示例，可以从源码中拷贝并更改为当前机器需要的
+
+      #+BEGIN_SRC shell
+        mkdir -pv /mnt/etc/
+        cat /mnt/srv/git/guix/gnu/system/examples/bare-bones.tmpl > /mnt/etc/config.scm
+      #+END_SRC
+
+      建议使用guile-studio来编辑它
+      #+BEGIN_SRC shell
+	guix environment --ad-hoc emacs-no-x guile-studio
+	guile-studio
+        # 使用 Ctrl + x ; Ctrl + f 来打开/mnt/etc/config.scm
+      #+END_SRC
+
+**** 设定引导程序
+	 如果是BIOS启动请编辑设定以下字段:
+
+	 #+BEGIN_SRC guile
+  (bootloader (bootloader-configuration
+                (bootloader grub-bootloader)
+                (target "/dev/sdX"))) ; 这里设定为激活的启动分区
+         
+	 #+END_SRC
+
+	 如果是UEFI启动请设定为:
+
+	 #+BEGIN_SRC guile
+  (bootloader (bootloader-configuration
+                (bootloader grub-efi-bootloader)
+                (target "/boot/efi")))
+
+	 #+END_SRC
+
+**** 设定文件系统
+
+	 请将 BIOS 或者 UEFI 的启动分区包括在其中
+
+	 #+BEGIN_SRC guile
+  (file-systems (append
+                 (list
+                  (file-system
+                   (device (uuid "")) ;; 使用 blkid工具读取并填入
+                   (mount-point "/")
+                   (options "compress-force=zstd:15")  ; 指定你需要的
+                   (type "btrfs")))    ; 指定你需要的
+                 %base-file-systems))
+
+	 #+END_SRC
+
+**** 设定账户
+
+	 注意: GuixSystem中使用useradd groupadd usermod 修改的内容会在下次更新系统时候覆盖
+	       所以建议所有用户配置都在配置文件中编写
+	       
+	 #+BEGIN_SRC guile
+  (users (append
+          (list
+           (user-account
+            (name "alice")
+            (comment "Bob's sister")
+            (group "users")
+            (supplementary-groups '("wheel"
+                                    "audio" "video"))))
+               %base-user-accounts))
+
+
+	 #+END_SRC
+
+**** 设定全局安装的包
+
+	 #+BEGIN_SRC guile
+  ;; Globally-installed packages.
+  (packages (append
+             (list
+              nss-certs ; TLS加密证书, https需要
+              tmux
+              screen)
+             %base-packages))
+	 #+END_SRC
+
+**** 设定服务
+
+	 #+BEGIN_SRC guile
+        (services (append (list (service dhcp-client-service-type)
+                          (service openssh-service-type
+                                   (openssh-configuration
+                                    (openssh openssh-sans-x)
+                                    (port-number 2222)))
+                   ;; 如果需要连接无线网络请加入 networkmanager 服务和wpa-supplicant服务
+                   )
+                    (modify-services
+                     %base-services
+                     (guix-service-type
+                      config =>
+                      (guix-configuration
+                       (inherit config)
+                       (substitute-urls
+                        (list
+                         "https://mirrors.sjtug.sjtu.edu.cn/guix")))))))) ; 使用中国大陆的反向代理缓存服务器
+	 #+END_SRC
+
+**** 其他的值请按照情况设定
+
+*** 安装
+
+      安装前请测试构建一下配置文件中是否有错误
+
+      #+BEGIN_SRC shell
+	guix system build /mnt/etc/config.scm
+        # 如果提示缺失模块，请按照提示将缺失模块补全
+      #+END_SRC
+
+      安装到目标磁盘
+
+      #+BEGIN_SRC shell
+        guix system init /mnt/etc/config.scm /mnt
+      #+END_SRC
+
+*** 重启
+
+       至此，可以启动的系统已经安装完毕了，重启进入系统，进行下一步配置
+
+*** 更新操作系统
+
+       现在进入启动之后的系统，执行:
+
+       #+BEGIN_SRC shell
+	 cd /srv/git/guix
+	 guix environment --ad-hoc git
+	 git pull gnu master
+	 git fetch gnu keyring:keyring
+	 guix pull --url=/srv/git/guix --branch=master
+         guix system reconfigure /etc/config.scm # 更新操作系统
+       #+END_SRC
+
+*** 更新配置文件
+
+       现在你可以继续完善你的配置文件:
+
+       1. 添加图形界面
+       2. 添加其他服务
+
+*** 配置文件做错了，系统无法启动，使用历史配置启动并修复
+
+       当你编辑配置文件并写错了它，糟糕的是你无法启动计算机了。
+       现在你可以使用 grub 菜单中的历史记录来启动历史版本的 GuixSystem并修复错误。
+
+*** 何去何从
+
+       1. 看 ~info guix~ 文档
+       2. 看其他Guix用户共享的配置文件
+       3. 看Guix官方的blog
+       4. 看Guix的源码
+
+** 几个应用场景
+
+*** 机器集群
+
+    得益于GuixSystem的配置文件使用编程语言编写，你可以在配置文件中调用其他的模块来生成配置文件。
+
+    比如:
+
+    调用HTTP模块来从机房的master获取信息来决定配置文件中的值
+    以下是一个例子:
+
+    当机房需要更新系统时候，客户端机器将从服务器获取需要的值，比如静态地址分配，主机名来生成最终的配置文件
+
+*** 稳定的个人计算机
+
+    由于GuixSystem拥有回滚,可重现,原子更新的特性
+    
+    将它作为个人计算机的操作系统将非常稳定。
