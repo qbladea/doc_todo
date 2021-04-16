@@ -1,0 +1,11 @@
+* 我的文档和演示
+
+** Org文本文档
+
+   使用支持orgmode的编辑器或者阅读器阅读
+   比如
+   GNU Emacs
+
+** Cast终端演示
+
+   使用asciinema来播放
